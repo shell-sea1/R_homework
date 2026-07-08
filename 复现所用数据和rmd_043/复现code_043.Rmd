@@ -1,0 +1,330 @@
+---
+title: "复现代码部分"
+author: '043'
+date: "2026-07-08"
+output: html_document
+---
+
+##导入文档，进行描述性统计
+```{r setup, include=FALSE}
+library(readr)
+library(tidyr)
+library(dplyr)
+dat_raw <- read_csv("D:\\new\\0.2\\r\\R_final\\final_3\\data_replicate.csv")
+head(dat_raw)
+##计算YA(年轻人)在weeks, years, past, future 四种条件下的internal details得分的平均数和标准差；
+##OA(老年人)在weeks, years, past, future 四种条件下的internal details得分的平均数和标准差；
+##YA(年轻人)在weeks, years, past, future 四种条件下的external details得分的平均数和标准差；
+##OA(老年人)在weeks, years, past, future 四种条件下的exyernal details得分的平均数和标准差。
+library(dplyr)
+library(tidyr)
+dat_raw <- dat_raw %>%
+  mutate(GRUPO = factor(GRUPO, levels = c(1,2), labels = c("YA","OA")))
+dat_raw <- dat_raw %>%
+  mutate(
+    INT_years = PL_int + FL_int,          
+    EXT_weeks = PC_ext + FC_ext,
+    EXT_years = PL_ext + FL_ext,
+    EXT_Past  = PC_ext + PL_ext,
+    EXT_Fut   = FC_ext + FL_ext
+  )
+table1 <- dat_raw %>%
+  group_by(GRUPO) %>%
+  summarise(
+    ##Internal
+    INT_weeks_M = mean(INT_weeks), INT_weeks_SD = sd(INT_weeks),
+    INT_years_M = mean(INT_years), INT_years_SD = sd(INT_years),
+    INT_Past_M  = mean(INT_Past),  INT_Past_SD  = sd(INT_Past),
+    INT_Fut_M   = mean(INT_Fut),   INT_Fut_SD   = sd(INT_Fut),
+    ##External
+    EXT_weeks_M = mean(EXT_weeks), EXT_weeks_SD = sd(EXT_weeks),
+    EXT_years_M = mean(EXT_years), EXT_years_SD = sd(EXT_years),
+    EXT_Past_M  = mean(EXT_Past),  EXT_Past_SD  = sd(EXT_Past),
+    EXT_Fut_M   = mean(EXT_Fut),   EXT_Fut_SD   = sd(EXT_Fut)
+  )
+table1_long <- table1 %>%
+  pivot_longer(-GRUPO, 
+               names_to = c("condition", "stat"), 
+               names_pattern = "(.*)_(M|SD)") %>%
+  pivot_wider(names_from = c(GRUPO, stat), values_from = value)
+
+table1_long %>%
+  mutate(across(where(is.numeric), ~ round(.x, 1))) %>%
+  print(n = Inf)
+##保留1位小数
+table1_long %>%
+  mutate(across(where(is.numeric), ~ sprintf("%.1f", .x))) %>%
+  print(n = Inf)
+```
+
+
+##混合方差分析
+```{r}
+library(dplyr)
+library(tidyr)
+library(afex) 
+dat_raw <- read_csv("D:\\new\\0.2\\r\\R_final\\final_3\\data_replicate.csv")
+names(dat_raw)
+##数据宽转长，每个被试4行
+dat_anova <- dat_raw %>%
+  select(ID_part, GRUPO, PC_int, PL_int, FC_int, FL_int) %>%
+  pivot_longer(
+    cols = PC_int:FL_int,
+    names_to = "condition",
+    values_to = "count"
+  ) %>%
+  mutate(
+    condition = recode(condition,
+                       "PC_int" = "past_weeks",
+                       "PL_int" = "past_years",
+                       "FC_int" = "future_weeks",
+                       "FL_int" = "future_years")
+  ) %>%
+  separate(condition, into = c("direction", "period"), sep = "_") %>%
+  mutate(
+    direction = factor(direction, levels = c("past", "future")),
+    period = factor(period, levels = c("weeks", "years")),
+    GRUPO = factor(GRUPO, levels = c(1,2), labels = c("YA","OA")),
+    ID_part = as.factor(ID_part)
+  ) %>%
+  na.omit()
+nrow(dat_anova)
+##运行方差分析
+library(afex)
+aov_result <- aov_ez(
+  id = "ID_part",
+  dv = "count",
+  between = "GRUPO",
+  within = c("direction", "period"),
+  data = dat_anova,
+  anova_table = list(es = "pes")
+)
+summary(aov_result)
+##补充YA和OA组的M和SD
+tot_int <- dat_anova %>%
+  group_by(ID_part, GRUPO) %>%
+  summarise(total_internal = sum(count), .groups = "drop")
+desc <- tot_int %>%
+  group_by(GRUPO) %>%
+  summarise(
+    M = mean(total_internal),
+    SD = sd(total_internal)
+  )
+print(desc)
+##计算η²（此处为偏η²）
+library(effectsize)
+eta_sq <- eta_squared(aov_result, partial = TRUE)
+print("提取的偏η²:")
+print(eta_sq)
+##方差分析绘图
+##图a
+library(dplyr)
+library(ggplot2)
+library(ggsignif)
+stats_summary <- dat_anova %>%
+  group_by(GRUPO, direction) %>%
+  summarise(
+    Mean = mean(count),
+    SD = sd(count),
+    .groups = 'drop'
+  )
+stats_ttest <- dat_anova %>%
+  group_by(ID_part, GRUPO) %>%
+  summarise(Total_Int = sum(count), .groups = 'drop') %>%
+  t.test(Total_Int ~ GRUPO, data = .)
+p_a <- ggplot(stats_summary, aes(x = direction, y = Mean, fill = GRUPO)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  geom_errorbar(
+    aes(ymin = Mean - SD, ymax = Mean + SD),
+    width = 0.2,
+    position = position_dodge(0.7)
+  ) +
+  ##标注p 值
+  geom_signif(
+    comparisons = list(c("past", "future")), # 比较 Past 和 Future
+    map_signif_level = TRUE, 
+    test = NULL,
+    annotations = "*",
+    y_position = max(stats_summary$Mean) * 1.1, # 星号位置
+    vjust = -0.5,
+    textsize = 5
+  ) +
+  scale_fill_manual(values = c("YA" = "lightgray", "OA" = "darkgray")) +
+  labs(x = "Temporal Direction", y = "Mean Number of Internal Details") +
+  theme_classic() +
+  theme(legend.position = "none")
+##图b
+stats_dir_only <- dat_anova %>%
+  group_by(direction) %>%
+  summarise(Mean = mean(count), SD = sd(count), .groups = 'drop')
+
+p_b <- ggplot(stats_dir_only, aes(x = direction, y = Mean)) +
+  geom_bar(stat = "identity", fill = "gray50", width = 0.6) +
+  geom_errorbar(
+    aes(ymin = Mean - SD, ymax = Mean + SD),
+    width = 0.2
+  ) +
+  ##标注p值
+  geom_signif(
+    comparisons = list(c("past", "future")),
+    map_signif_level = TRUE,
+    test = NULL,
+    annotations = "*",
+    y_position = max(stats_dir_only$Mean) * 1.1,
+    vjust = -0.5,
+    textsize = 5
+  ) +
+  labs(x = "Temporal Direction", y = "Mean Number of Internal Details") +
+  theme_classic()
+##展示所有图
+library(patchwork)
+final_plot <- (p_a + p_b) 
+print(final_plot)
+##YA和OA组间比较
+stats_swap <- dat_total %>%
+group_by(detail_type, GRUPO) %>%
+summarise(Mean = mean(total_score), SD = sd(total_score), .groups = "drop")
+p_swap <- ggplot(stats_swap, aes(x = detail_type, y = Mean, fill = GRUPO)) + geom_bar(stat = "identity", position = position_dodge(0.7), width = 0.6) + geom_errorbar(
+aes(ymin = Mean - SD, ymax = Mean + SD),
+width = 0.2,
+position = position_dodge(0.7)
+) + geom_signif(
+xmin = 1 - 0.15,
+xmax = 1 + 0.15,
+y_position = max(stats_swap$Mean) * 1.1, 
+annotation = "***",
+tip_length = 0.02,
+textsize = 5
+) + scale_fill_manual(values = c("YA" = "lightgray", "OA" = "darkgray")) + labs(x = "Detail Type", y = "Mean Number of Details", fill = "Age Group") +
+theme_classic()
+print(p_swap)
+```
+
+## Including Plots
+
+
+##相关分析
+```{r}
+##dat_replicate已导入
+library(dplyr)
+library(ggplot2)
+library(ggpubr)  
+##筛选老年人数据，并计算所需变量
+dat_oa <- dat_raw %>%
+  filter(GRUPO == 2) %>%  # 假设 GRUPO=2 是老年人
+  mutate(
+    INT_Past = PC_int + PL_int,          # 过去内部细节
+    INT_Fut  = FC_int + FL_int,          # 未来内部细节
+    EXT_Past = PC_ext + PL_ext,          # 过去外部细节
+    EXT_Fut  = FC_ext + FL_ext           # 未来外部细节
+  ) %>%
+  select(ID_part, VPA, INT_Past, INT_Fut, EXT_Past, EXT_Fut)
+##进行四个相关分析
+cor_results <- list(
+  cor.test(dat_oa$VPA, dat_oa$INT_Past, method = "pearson"),
+  cor.test(dat_oa$VPA, dat_oa$INT_Fut,  method = "pearson"),
+  cor.test(dat_oa$VPA, dat_oa$EXT_Past, method = "pearson"),
+  cor.test(dat_oa$VPA, dat_oa$EXT_Fut,  method = "pearson")
+)
+names(cor_results) <- c("VPA_INT_Past", "VPA_INT_Fut", "VPA_EXT_Past", "VPA_EXT_Fut")
+for (i in seq_along(cor_results)) {
+  cat("\n", names(cor_results)[i], ":\n")
+  print(cor_results[[i]])
+}
+
+##绘制四个散点图
+dat_oa_long <- dat_oa %>%
+  pivot_longer(
+    cols = c(INT_Past, INT_Fut, EXT_Past, EXT_Fut),
+    names_to = "detail_type",
+    values_to = "details_score"
+  ) %>%
+  mutate(
+    detail_label = case_when(
+      detail_type == "INT_Past" ~ "Internal Past",
+      detail_type == "INT_Fut"  ~ "Internal Future",
+      detail_type == "EXT_Past" ~ "External Past",
+      detail_type == "EXT_Fut"  ~ "External Future"
+    )
+  )
+
+
+p_scatter <- ggscatter(
+  dat_oa_long, 
+  x = "VPA", 
+  y = "details_score",
+  add = "reg.line",
+  conf.int = TRUE,
+  color = "detail_label",
+  palette = "jco",
+  shape = "detail_label",
+  size = 2,
+  alpha = 0.6
+) +
+  stat_cor(aes(color = detail_label), label.x.npc = "left", label.y.npc = "top") +
+  facet_wrap(~ detail_label, scales = "free_y", ncol = 2) +
+  labs(
+    x = "VPA Score (Verbal Paired Associates)",
+    y = "Number of Details",
+    color = "Detail Type",
+    shape = "Detail Type"
+  ) +
+  theme_bw()
+
+print(p_scatter)
+```
+
+
+
+##拓展分析1：方差齐性检验
+```{r}
+##数据重新宽转长，并保存
+library(readr)
+library(tidyr)
+library(dplyr)
+dat_raw <- read_csv("D:\\new\\0.2\\r\\R_final\\final_3\\data_replicate.csv")
+dat_long <- dat_raw %>%
+  pivot_longer(
+    cols = PC_int:FL_ext,                     
+    names_to = c("direction", "period", "detail"),   ##新的列名
+    names_pattern = "(P|F)(C|L)_(int|ext)",            ##正则：第一个字母(P/F)，第二个字母(C/L)，下划线后(int/ext)
+    values_to = "count"                             
+  )
+dat_long <- dat_long %>%
+  mutate(
+    direction = recode(direction, P = "past", F = "future"),
+    period    = recode(period, C = "weeks", L = "years"),
+    detail    = recode(detail, int = "internal", ext = "external")
+  )
+head(dat_long, 10)
+write_csv(dat_long, "D:\\new\\0.2\\r\\R_final\\final_3\\dat_long.csv")
+cat("文件已保存到指定路径\n")
+
+##导入宽转长后的数据
+dat_ext <- dat_long %>% filter(detail == "ext")
+dat_ext$GRUPO <-as.factor(dat_ext$GRUPO)
+car::leveneTest(count ~ GRUPO, data = dat_ext)
+t_ext <- t.test(count ~ GRUPO, data = dat_ext)
+print(t_ext)
+```
+
+##拓展分析2：相关分析post-hoc检验
+```{r}
+library(pwr)
+pwr.r.test(n=16, r = .55, sig.level = .05)
+```
+
+
+##拓展分析3：LLM重新计算ANOVA
+```{r}
+dat_int <- dat_long %>% filter(detail == "int")
+m <- lmer(count ~ GRUPO * direction * period + (1 | ID_part), data = dat_int)
+summary(m)
+##对交互作用进行简单效应分析
+library(emmeans)
+emm <- emmeans(m, ~ GRUPO | direction)
+pairs(emm, adjust = "bonferroni")
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
